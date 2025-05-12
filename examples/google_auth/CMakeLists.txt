@@ -38,12 +38,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Crow)
 
+# Fetch cpp-httplib dependency
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.15.3 # Use a recent stable tag
+)
+FetchContent_MakeAvailable(httplib)
+
+# Find OpenSSL for HTTPS support in cpp-httplib
+find_package(OpenSSL REQUIRED)
+
 # --- Executable ---
 add_executable(google_auth_example main.cpp)
 
 target_link_libraries(google_auth_example PRIVATE
     minioauth2
     Crow::Crow
+    httplib::httplib
+    OpenSSL::SSL
+    OpenSSL::Crypto
     # Asio might be linked via Crow, or link explicitly if needed:
     # Asio::asio # This target might be available if Asio creates one.
     # For header-only Asio, often just the include directory is enough,
@@ -69,5 +83,19 @@ endif()
 # if(TARGET nlohmann_json::nlohmann_json)
 #    target_link_libraries(google_auth_example PRIVATE nlohmann_json::nlohmann_json)
 # endif()
+
+# Define the macro to enable OpenSSL support in cpp-httplib
+target_compile_definitions(google_auth_example
+    PRIVATE
+    CPPHTTPLIB_OPENSSL_SUPPORT
+    ASIO_STANDALONE # Often needed by Crow
+)
+
+# Ensure Crow headers are available
+target_include_directories(google_auth_example
+    PRIVATE
+    ${crow_SOURCE_DIR}/include
+    ${httplib_SOURCE_DIR}
+)
 
 install(TARGETS google_auth_example DESTINATION bin) 

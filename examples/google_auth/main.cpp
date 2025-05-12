@@ -1,11 +1,16 @@
 #include "crow.h"
 #include "minioauth2.hpp"
+#define CPPHTTPLIB_OPENSSL_SUPPORT // Ensure this is defined before including httplib.h
+#include "httplib.h" // Include cpp-httplib
 #include <iostream>
 #include <string>
 #include <cstdlib> // std::getenv
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stdexcept> // Include for std::runtime_error
+#include <utility> // Include for std::move
+#include <regex> // Include for parsing host/path
 
 // --- Configuration --- 
 // Load from environment variables for security
@@ -70,6 +75,7 @@ int main()
 
     CROW_ROUTE(app, "/callback")
     ([&](const crow::request& req){
+        std::string token_response_body;
         try {
             // 1. Parse query parameters
             // Get the query string part from the request URL
@@ -111,7 +117,7 @@ int main()
 
             std::cout << "Received callback. Code: " << code << ", State: " << received_state << std::endl;
 
-            // 3. Prepare the token exchange request
+            // 3. Prepare the token exchange request (using minioauth2)
             auto token_req = minioauth2::build_token_exchange_request(google_config, code, code_verifier);
 
             std::cout << "\n--- Preparing Token Exchange Request --- " << std::endl;
@@ -125,65 +131,92 @@ int main()
             std::cout << "Body: " << token_req.body << std::endl;
             std::cout << "----------------------------------------\n" << std::endl;
 
-            // 4. *** Perform the Token Exchange POST request ***
-            //    This requires an HTTP client library (e.g., cpr, cpp-httplib, boost.beast)
-            //    MiniOAuth2 only *prepares* the request parameters.
-            std::string token_response_body = ""; // Placeholder
-            // Example with a hypothetical HTTP client:
-            // HttpClient client;
-            // auto http_response = client.post(token_req.url, token_req.body, token_req.headers);
-            // if (http_response.status_code == 200) {
-            //     token_response_body = http_response.body;
+            // 4. *** Perform the Token Exchange POST request using cpp-httplib ***
+            std::cout << "Attempting token exchange..." << std::endl;
+
+            // Parse URL to get host and path for httplib::Client
+            std::smatch match;
+            std::regex url_regex(R"(^(https?):\/\/([^\/]+)(\/.*)?$)");
+            std::string url_str = token_req.url;
+            std::string host, path;
+            if (std::regex_match(url_str, match, url_regex) && match.size() >= 3) {
+                host = match[2].str();
+                path = match.size() >= 4 ? match[3].str() : "/";
+                if (path.empty()) path = "/";
+            } else {
+                throw std::runtime_error("Could not parse token endpoint URL: " + url_str);
+            }
+            
+            std::cout << "Parsed URL - Host: " << host << ", Path: " << path << std::endl;
+
+            // Create HTTPS client (requires OpenSSL)
+            httplib::Client cli(std::string("https://") + host); // Prepend https://
+            cli.enable_server_certificate_verification(true); // Recommended for production
+            // You might need to configure CA cert path/bundle depending on your system:
+            // const char * ca_cert_path = std::getenv("SSL_CERT_FILE");
+            // if (ca_cert_path) {
+            //     cli.set_ca_cert_path(ca_cert_path);
             // } else {
-            //     std::cerr << "Token exchange failed: " << http_response.status_code << " Body: " << http_response.body << std::endl;
-            //     return crow::response(500, "Failed to exchange token.");
+            //     // Attempt default locations or log a warning
+            //     // Example: cli.set_ca_cert_path("./ca-bundle.pem");
+            //     std::cout << "Warning: SSL_CERT_FILE env var not set. Using system default CA certs, verification might fail." << std::endl;
             // }
 
-            // Simulate a successful response for demonstration if no client is available
-            // ** REMOVE THIS SIMULATION IN A REAL APPLICATION **
-            if (token_response_body.empty() && google_config.client_id == "test_client_id") { // Only simulate for a specific test ID
-                 std::cout << "\n--- SIMULATING Token Response --- \n";
-                 token_response_body = R"({
-                    "access_token": "simulated_access_token_123",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                    "id_token": "simulated_id_token.abc.xyz",
-                    "scope": "openid profile email"
-                 })";
-                 std::cout << token_response_body << std::endl;
-                 std::cout << "----------------------------------\n" << std::endl;
-            }
-            // ** END SIMULATION **
-
-            if (token_response_body.empty()) {
-                std::cerr << "Token exchange skipped (no HTTP client implemented in example)." << std::endl;
-                return crow::response(200, "Callback received, but token exchange requires an HTTP client.<br/>Prepared Request:<br/>URL: " + token_req.url + "<br/>Body: " + token_req.body);
+            // Convert map<string, string> headers to httplib::Headers
+            httplib::Headers http_headers;
+            for(const auto& pair : token_req.headers) {
+                http_headers.emplace(pair.first, pair.second);
             }
 
-            // 5. Parse the token response
+            // Send POST request
+            auto http_res = cli.Post(path.c_str(), http_headers, token_req.body, "application/x-www-form-urlencoded");
+
+            if (!http_res) {
+                 // Handle transport errors (connection failed, timeout, etc.)
+                 auto err = http_res.error();
+                 std::string error_msg = "HTTP request failed: " + httplib::to_string(err);
+                 std::cerr << error_msg << std::endl;
+                 // Depending on the error, you might check if cli.is_ssl() and provide OpenSSL error details
+                 // unsigned long ssl_err = cli.get_openssl_verify_result();
+                 // if (ssl_err != X509_V_OK) { ... }
+                 throw std::runtime_error(error_msg);
+            }
+
+            std::cout << "Token exchange response status: " << http_res->status << std::endl;
+            std::cout << "Token exchange response body: " << http_res->body << std::endl;
+
+            if (http_res->status != 200) {
+                 std::cerr << "Token exchange failed with status: " << http_res->status << std::endl;
+                 throw std::runtime_error("Token exchange failed. Status: " + std::to_string(http_res->status) + ", Body: " + http_res->body);
+            }
+
+            token_response_body = http_res->body;
+
+            // 5. Parse the token response (Now using the actual response)
             #ifdef MINIOAUTH2_USE_NLOHMANN_JSON
                 try {
                     // Explicitly cast to string_view to resolve ambiguity
                     auto token_response = minioauth2::parse_token_response(std::string_view{token_response_body});
                     std::cout << "Access Token: " << token_response.access_token << std::endl;
                     if(token_response.id_token) {
-                         std::cout << "ID Token: " << *token_response.id_token << std::endl;
-                         // TODO: In production, you MUST validate the ID token (signature, claims, etc.)
-                         // Basic parsing is possible, but full validation requires a JWT library.
+                         std::cout << "ID Token received." << std::endl;
+                        // TODO: Validate ID token!
+                        // Try parsing payload (NO VALIDATION)
+                        auto payload = minioauth2::parse_jwt_payload(*token_response.id_token);
+                        if (payload && payload->contains("email")) {
+                           std::string user_email = payload->value("email", "(email not found in ID token)");
+                           return crow::response(200, "Login Successful! Welcome, " + user_email + "<br/>(Token parsing successful)");
+                        }
                     }
 
-                    // 6. (Optional) Use the access token to fetch user info
-                    //    Requires another HTTP GET request to Google's userinfo endpoint.
-                    //    std::string user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo";
-                    //    // auto user_info_response = client.get(user_info_url, {"Authorization: Bearer " + token_response.access_token});
-                    //    // Parse user_info_response.body (JSON)
-                    std::string user_email = "user@example.com (simulated)"; // Placeholder
+                    return crow::response(200, "Login Successful! Welcome, (Not implemented yet - requires userinfo request)");
 
-                    return crow::response(200, "Login Successful! Welcome, " + user_email);
-
-                } catch (const std::exception& e) {
-                    std::cerr << "Failed to parse token response: " << e.what() << std::endl;
-                    return crow::response(500, "Failed to parse token response.");
+                } catch (const nlohmann::json::exception& e) { // More specific catch
+                    std::cerr << "Failed to parse token JSON response: " << e.what() << std::endl;
+                    return crow::response(500, "Failed to parse token response JSON: " + std::string(e.what()));
+                } catch (const std::runtime_error& e) { // Catch other minioauth2 errors
+                    std::cerr << "Error processing token response: " << e.what() << std::endl;
+                    return crow::response(500, "Error processing token response: " + std::string(e.what()));
                 }
             #else
                  return crow::response(501, "Token parsing requires nlohmann/json. Enable MINIOAUTH2_USE_NLOHMANN_JSON.");
@@ -191,7 +224,9 @@ int main()
 
         } catch (const std::exception& e) {
              std::cerr << "Error during /callback: " << e.what() << std::endl;
-             return crow::response(500, "Internal Server Error during callback.");
+             // Avoid leaking sensitive info like full body in production errors
+             std::string error_details = e.what();
+             return crow::response(500, "Internal Server Error during callback: " + error_details);
         }
     });
 

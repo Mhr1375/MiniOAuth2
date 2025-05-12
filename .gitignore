@@ -1,3 +1,31 @@
+# CMake / Build directories
+[Bb]uild/
+[Bb]uild*/
+[Dd]ebug/
+[Rr]elease/
+*.out
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Fetched Dependencies (CMake FetchContent / vcpkg)
+_deps/
+vcpkg_installed/
+
+# IDE specific files
+.vscode/
+.vs/
+*.VC.db
+*.suo
+*.user
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
 # CMake build files
 CMakeCache.txt
 CMakeFiles/
@@ -8,11 +36,8 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
-_deps/
 
 # Build directories
-build/
-build-*/
 Build/
 bin/
 lib/
@@ -30,8 +55,6 @@ lib/
 *.aps
 *.ncb
 *.VC.db
-*/[Dd]ebug/
-*/[Rr]elease/
 */x64/
 */ARM/
 */ARM64/
@@ -49,7 +72,6 @@ lib/
 # Other
 *.swp
 *~
-.DS_Store
 
 # Specific to this project example temp storage
 /examples/google_auth/session_store.tmp # If we add file-based session later 
