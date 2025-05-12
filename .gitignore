@@ -1,0 +1,55 @@
+# CMake build files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Build directories
+build/
+build-*/
+Build/
+bin/
+lib/
+
+# Visual Studio files
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.db
+*.ipch
+*.aps
+*.ncb
+*.VC.db
+*/[Dd]ebug/
+*/[Rr]elease/
+*/x64/
+*/ARM/
+*/ARM64/
+*/Win32/
+*.[Pp]db
+*.[Ii]db
+*.[Oo]bj
+*.[Ll]og
+*.[Tt]log
+
+# Qt files
+*.pro.user
+*.qbs.user
+
+# Other
+*.swp
+*~
+.DS_Store
+
+# Specific to this project example temp storage
+/examples/google_auth/session_store.tmp # If we add file-based session later 

@@ -1,0 +1,74 @@
+name: C++ CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build_and_test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest] # Add windows
+        compiler: [gcc, clang, msvc]
+        exclude:
+          - os: windows-latest
+            compiler: gcc # MinGW setup can be tricky in CI
+          - os: windows-latest
+            compiler: clang # Clang on Windows setup can be tricky
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up compiler (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        if [ "${{ matrix.compiler }}" == "gcc" ]; then
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ ninja-build cmake
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
+        elif [ "${{ matrix.compiler }}" == "clang" ]; then
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build cmake
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+        fi
+
+    - name: Set up compiler (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      uses: microsoft/setup-msbuild@v1.3 # Use setup-msbuild for VS environment
+
+    - name: Configure CMake
+      run: cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug
+      env:
+        # Pass CC/CXX for Linux compilers
+        CC: ${{ env.CC }}
+        CXX: ${{ env.CXX }}
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests
+      if: runner.os != 'Windows' # CTest doesn't always work reliably with MSVC output in simple GH Actions
+      working-directory: ./build
+      run: ctest -C Debug --output-on-failure
+
+    # TODO: Add steps for:
+    # - Static analysis (clang-tidy)
+    #   run: | 
+    #     sudo apt-get install clang-tidy
+    #     cmake -B build-tidy -S . -DCMAKE_CXX_CLANG_TIDY="clang-tidy;-checks=*;"
+    #     cmake --build build-tidy
+    # - Sanitizer builds (ASan, UBSan)
+    #   run: | 
+    #     cmake -B build-asan -S . -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address -g"
+    #     cmake --build build-asan
+    #     # Run tests under ASan
+    # - Check for Boost usage (and fail if found)
+    #   run: | 
+    #     grep -r -E 'boost::|BOOST_' include/ examples/ test/
+    #     if [ $? == 0 ]; then exit 1; fi 
