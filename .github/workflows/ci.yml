@@ -10,18 +10,24 @@ jobs:
   build_and_test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest] # Add windows
+        os: [ubuntu-latest, windows-latest]
         compiler: [gcc, clang, msvc]
+        include: # Define specific configurations if needed, e.g. for different VS versions
+          - os: windows-latest
+            compiler: msvc
+            cmake_generator: Visual Studio 17 2022
         exclude:
           - os: windows-latest
-            compiler: gcc # MinGW setup can be tricky in CI
+            compiler: gcc
           - os: windows-latest
-            compiler: clang # Clang on Windows setup can be tricky
+            compiler: clang
 
     runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive' # Ensure submodules like vcpkg are checked out
 
     - name: Set up compiler (Linux)
       if: runner.os == 'Linux'
@@ -38,16 +44,27 @@ jobs:
           echo "CXX=clang++" >> $GITHUB_ENV
         fi
 
-    - name: Set up compiler (Windows)
+    - name: Set up MSVC (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
-      uses: microsoft/setup-msbuild@v1.3 # Use setup-msbuild for VS environment
+      uses: microsoft/setup-msbuild@v1.3
+
+    - name: Setup vcpkg (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '93193f240893409389e090c242102c5f9a99a91a' # Pinned commit for stability
+        vcpkgTriplet: 'x64-windows-static' # Or x64-windows if dynamic linking is preferred
+        vcpkgArguments: 'openssl'
 
     - name: Configure CMake
-      run: cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug
-      env:
-        # Pass CC/CXX for Linux compilers
-        CC: ${{ env.CC }}
-        CXX: ${{ env.CXX }}
+      run: |
+        if [ "${{ runner.os }}" == "Windows" ]; then
+          cmake -B build -S . -G "${{ matrix.cmake_generator }}" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=${{ runner.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        else
+          cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -D CMAKE_C_COMPILER=${{ env.CC }} -D CMAKE_CXX_COMPILER=${{ env.CXX }}
+        fi
+      # Removed env block here as CC/CXX are passed directly in the command for Linux
+      # and MSVC setup should handle compiler paths for Windows.
 
     - name: Build
       run: cmake --build build --config Debug
