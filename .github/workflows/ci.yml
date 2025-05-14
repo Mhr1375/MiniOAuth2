@@ -39,6 +39,7 @@ jobs:
       if: runner.os == 'Linux' && matrix.compiler == 'gcc'
       working-directory: main_project
       run: |
+        echo ">>> LINUX GCC SETUP INITIATED (OS: ${{ runner.os }}, Compiler: ${{ matrix.compiler }}) <<<"
         echo "DEBUG: Setting up Linux compiler: gcc"
         sudo apt-get update --fix-missing
         sudo apt-get install -y gcc g++ ninja-build cmake
@@ -49,6 +50,7 @@ jobs:
       if: runner.os == 'Linux' && matrix.compiler == 'clang'
       working-directory: main_project
       run: |
+        echo ">>> LINUX CLANG SETUP INITIATED (OS: ${{ runner.os }}, Compiler: ${{ matrix.compiler }}) <<<"
         echo "DEBUG: Setting up Linux compiler: clang"
         sudo apt-get update --fix-missing
         sudo apt-get install -y clang ninja-build cmake
@@ -82,10 +84,15 @@ jobs:
 
     - name: Install dependencies with vcpkg (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      working-directory: ${{ github.workspace }}/main_project # vcpkg.json is here
+      shell: pwsh
       run: |
-        echo "Attempting to install dependencies using vcpkg.json from ${{ github.workspace }}\main_project"
-        ${{ github.workspace }}\vcpkg\vcpkg.exe install --triplet x64-windows-static --vcpkg-root ${{ github.workspace }}\vcpkg ${{ github.workspace }}\main_project
-      shell: pwsh # Using pwsh for better variable expansion and path handling
+        echo "DEBUG: Current directory for vcpkg install: $(Get-Location)"
+        echo "DEBUG: Attempting to install dependencies using vcpkg.json from $(Get-Location)"
+        echo "DEBUG: vcpkg.exe path to be used: ${{ github.workspace }}\vcpkg\vcpkg.exe"
+        echo "DEBUG: --vcpkg-root path to be used: ${{ github.workspace }}\vcpkg"
+        & "${{ github.workspace }}\vcpkg\vcpkg.exe" install --triplet x64-windows-static --vcpkg-root "${{ github.workspace }}\vcpkg"
+        echo "DEBUG: vcpkg install command finished."
 
     - name: DEBUG - After vcpkg Setup (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
@@ -97,7 +104,7 @@ jobs:
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       working-directory: main_project
-      shell: cmd # Stick to cmd for consistency with bootstrap if MSVC vars are set by it
+      shell: cmd 
       run: |
         echo "DEBUG: Starting CMake configuration for Windows (MSVC)."
         cmake -B build -S . -G "${{ matrix.cmake_generator }}" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
