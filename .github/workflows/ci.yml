@@ -22,7 +22,7 @@ jobs:
             compiler: gcc
           - os: windows-latest
             compiler: clang
-          - os: ubuntu-latest # Explicitly exclude msvc for ubuntu
+          - os: ubuntu-latest
             compiler: msvc
 
     runs-on: ${{ matrix.os }}
@@ -32,76 +32,79 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-        path: main_project # Checkout main project to a sub-path
+        path: main_project
 
-    - name: Set up compiler (Linux)
-      if: runner.os == 'Linux'
-      working-directory: main_project # Ensure commands run in project directory
+    # Linux Compiler Setup
+    - name: Set up GCC (Linux)
+      if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+      working-directory: main_project
       run: |
-        echo "DEBUG: Setting up Linux compiler: ${{ matrix.compiler }}"
-        if [ "${{ matrix.compiler }}" == "gcc" ]; then
-          sudo apt-get update
-          sudo apt-get install -y gcc g++ ninja-build cmake
-          echo "CC_FOR_CMAKE=gcc" >> $GITHUB_ENV
-          echo "CXX_FOR_CMAKE=g++" >> $GITHUB_ENV
-        elif [ "${{ matrix.compiler }}" == "clang" ]; then
-          sudo apt-get update
-          sudo apt-get install -y clang ninja-build cmake
-          echo "CC_FOR_CMAKE=clang" >> $GITHUB_ENV
-          echo "CXX_FOR_CMAKE=clang++" >> $GITHUB_ENV
-        # No else needed due to matrix exclude
-        fi
+        echo "DEBUG: Setting up Linux compiler: gcc"
+        sudo apt-get update --fix-missing
+        sudo apt-get install -y gcc g++ ninja-build cmake
+        echo "CC_FOR_CMAKE=gcc" >> $GITHUB_ENV
+        echo "CXX_FOR_CMAKE=g++" >> $GITHUB_ENV
 
+    - name: Set up Clang (Linux)
+      if: runner.os == 'Linux' && matrix.compiler == 'clang'
+      working-directory: main_project
+      run: |
+        echo "DEBUG: Setting up Linux compiler: clang"
+        sudo apt-get update --fix-missing
+        sudo apt-get install -y clang ninja-build cmake
+        echo "CC_FOR_CMAKE=clang" >> $GITHUB_ENV
+        echo "CXX_FOR_CMAKE=clang++" >> $GITHUB_ENV
+
+    # Windows MSVC Setup
     - name: Set up MSVC (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       uses: microsoft/setup-msbuild@v1.3
 
-    - name: DEBUG - After MSVC Setup
+    - name: DEBUG - After MSVC Setup (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       run: |
         echo "DEBUG: MSVC setup step completed."
 
-    # Windows vcpkg setup using manual checkout and bootstrap
+    # Windows vcpkg setup
     - name: Checkout vcpkg (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       uses: actions/checkout@v4
       with:
         repository: 'microsoft/vcpkg'
-        ref: '2023.10.19' # Pin to a specific stable tag or commit
+        ref: '2023.10.19'
         path: vcpkg
 
     - name: Bootstrap vcpkg (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       working-directory: vcpkg
       run: .\bootstrap-vcpkg.bat -disableMetrics
-      shell: cmd # bootstrap-vcpkg.bat is a cmd script
+      shell: cmd
 
     - name: Install dependencies with vcpkg (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
-      working-directory: main_project # vcpkg.json is in the main project directory
-      run: ../vcpkg/vcpkg install --triplet x64-windows-static
-      shell: cmd
+      run: |
+        echo "Attempting to install dependencies using vcpkg.json from ${{ github.workspace }}\main_project"
+        ${{ github.workspace }}\vcpkg\vcpkg.exe install --triplet x64-windows-static --vcpkg-root ${{ github.workspace }}\vcpkg ${{ github.workspace }}\main_project
+      shell: pwsh # Using pwsh for better variable expansion and path handling
 
     - name: DEBUG - After vcpkg Setup (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       run: |
         echo "DEBUG: vcpkg setup and install step completed."
-        echo "DEBUG: VCPKG_ROOT should be path to vcpkg directory, which is ${{ github.workspace }}\vcpkg"
+        echo "DEBUG: VCPKG_ROOT (expected) is ${{ github.workspace }}\vcpkg"
 
+    # CMake Configuration
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       working-directory: main_project
+      shell: cmd # Stick to cmd for consistency with bootstrap if MSVC vars are set by it
       run: |
         echo "DEBUG: Starting CMake configuration for Windows (MSVC)."
-        set VCPKG_INSTALLATION_ROOT=%GITHUB_WORKSPACE%\vcpkg\installed
-        echo "DEBUG: VCPKG_INSTALLATION_ROOT is %VCPKG_INSTALLATION_ROOT%"
-        echo "DEBUG: Using CMAKE_TOOLCHAIN_FILE: %GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
-        cmake -B build -S . -G "%{{ matrix.cmake_generator }}%" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
+        cmake -B build -S . -G "${{ matrix.cmake_generator }}" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
         echo "DEBUG: CMake configuration for Windows (MSVC) finished."
-      shell: cmd
     
     - name: Configure CMake (Linux)
-      if: runner.os == 'Linux' # Condition already refined by matrix exclude
+      if: runner.os == 'Linux' && (matrix.compiler == 'gcc' || matrix.compiler == 'clang')
       working-directory: main_project
       env:
         CC: ${{ env.CC_FOR_CMAKE }}
@@ -110,19 +113,20 @@ jobs:
         echo "DEBUG: Starting CMake configuration for Linux (${{ matrix.compiler }})."
         echo "DEBUG: CC is $CC, CXX is $CXX"
         if [ -z "$CC" ] || [ -z "$CXX" ]; then
-          echo "::error:: CC or CXX environment variables are not set for Linux CMake configuration."
+          echo "::error:: CC or CXX environment variables are not set for Linux CMake configuration ($CC, $CXX)."
           exit 1
         fi
         cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -D CMAKE_C_COMPILER=$CC -D CMAKE_CXX_COMPILER=$CXX
         echo "DEBUG: CMake configuration for Linux (${{ matrix.compiler }}) finished."
 
+    # Build and Test
     - name: Build
-      working-directory: main_project # All build commands should be in the project context
+      working-directory: main_project
       run: cmake --build build --config Debug
 
     - name: Run tests
       if: runner.os != 'Windows'
-      working-directory: main_project/build # Tests run from the build directory
+      working-directory: main_project/build
       run: ctest -C Debug --output-on-failure
 
     # TODO: Add steps for:
