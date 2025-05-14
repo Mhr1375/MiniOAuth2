@@ -22,17 +22,21 @@ jobs:
             compiler: gcc
           - os: windows-latest
             compiler: clang
+          - os: ubuntu-latest # Explicitly exclude msvc for ubuntu
+            compiler: msvc
 
     runs-on: ${{ matrix.os }}
 
     steps:
-    - name: Checkout code
+    - name: Checkout project code
       uses: actions/checkout@v4
       with:
         submodules: 'recursive'
+        path: main_project # Checkout main project to a sub-path
 
     - name: Set up compiler (Linux)
       if: runner.os == 'Linux'
+      working-directory: main_project # Ensure commands run in project directory
       run: |
         echo "DEBUG: Setting up Linux compiler: ${{ matrix.compiler }}"
         if [ "${{ matrix.compiler }}" == "gcc" ]; then
@@ -45,9 +49,7 @@ jobs:
           sudo apt-get install -y clang ninja-build cmake
           echo "CC_FOR_CMAKE=clang" >> $GITHUB_ENV
           echo "CXX_FOR_CMAKE=clang++" >> $GITHUB_ENV
-        else
-          echo "::error::Unsupported Linux compiler: ${{ matrix.compiler }}"
-          exit 1
+        # No else needed due to matrix exclude
         fi
 
     - name: Set up MSVC (Windows)
@@ -59,36 +61,48 @@ jobs:
       run: |
         echo "DEBUG: MSVC setup step completed."
 
-    - name: Set VCPKG_DEFAULT_TRIPLET (Windows)
+    # Windows vcpkg setup using manual checkout and bootstrap
+    - name: Checkout vcpkg (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
-      run: echo "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Setup vcpkg and install dependencies (Windows)
-      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
-      uses: lukka/run-vcpkg@v11 # Assuming v11 supports vcpkg.json properly
+      uses: actions/checkout@v4
       with:
-        vcpkgGitCommitId: '93193f240893409389e090c242102c5f9a99a91a'
-        runVcpkgInstall: true # This should now use vcpkg.json
-        # Removed vcpkgTriplet and vcpkgArguments as they were invalid inputs
-        # VCPKG_DEFAULT_TRIPLET is set in the previous step
+        repository: 'microsoft/vcpkg'
+        ref: '2023.10.19' # Pin to a specific stable tag or commit
+        path: vcpkg
 
-    - name: DEBUG - After vcpkg Setup
+    - name: Bootstrap vcpkg (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      working-directory: vcpkg
+      run: .\bootstrap-vcpkg.bat -disableMetrics
+      shell: cmd # bootstrap-vcpkg.bat is a cmd script
+
+    - name: Install dependencies with vcpkg (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      working-directory: main_project # vcpkg.json is in the main project directory
+      run: ../vcpkg/vcpkg install --triplet x64-windows-static
+      shell: cmd
+
+    - name: DEBUG - After vcpkg Setup (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       run: |
-        echo "DEBUG: vcpkg setup step completed. VCPKG_ROOT is ${{ env.VCPKG_ROOT }}"
-        echo "DEBUG: VCPKG_DEFAULT_TRIPLET is ${{ env.VCPKG_DEFAULT_TRIPLET }}"
+        echo "DEBUG: vcpkg setup and install step completed."
+        echo "DEBUG: VCPKG_ROOT should be path to vcpkg directory, which is ${{ github.workspace }}\vcpkg"
 
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      working-directory: main_project
       run: |
         echo "DEBUG: Starting CMake configuration for Windows (MSVC)."
-        echo "DEBUG: Using CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
-        echo "DEBUG: VCPKG_ROOT (env) is ${{ env.VCPKG_ROOT }}"
-        cmake -B build -S . -G "${{ matrix.cmake_generator }}" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        set VCPKG_INSTALLATION_ROOT=%GITHUB_WORKSPACE%\vcpkg\installed
+        echo "DEBUG: VCPKG_INSTALLATION_ROOT is %VCPKG_INSTALLATION_ROOT%"
+        echo "DEBUG: Using CMAKE_TOOLCHAIN_FILE: %GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
+        cmake -B build -S . -G "%{{ matrix.cmake_generator }}%" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
         echo "DEBUG: CMake configuration for Windows (MSVC) finished."
+      shell: cmd
     
     - name: Configure CMake (Linux)
-      if: runner.os == 'Linux' && (matrix.compiler == 'gcc' || matrix.compiler == 'clang')
+      if: runner.os == 'Linux' # Condition already refined by matrix exclude
+      working-directory: main_project
       env:
         CC: ${{ env.CC_FOR_CMAKE }}
         CXX: ${{ env.CXX_FOR_CMAKE }}
@@ -103,11 +117,12 @@ jobs:
         echo "DEBUG: CMake configuration for Linux (${{ matrix.compiler }}) finished."
 
     - name: Build
+      working-directory: main_project # All build commands should be in the project context
       run: cmake --build build --config Debug
 
     - name: Run tests
       if: runner.os != 'Windows'
-      working-directory: ./build
+      working-directory: main_project/build # Tests run from the build directory
       run: ctest -C Debug --output-on-failure
 
     # TODO: Add steps for:
