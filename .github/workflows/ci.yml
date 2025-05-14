@@ -9,7 +9,7 @@ on:
 jobs:
   build_and_test:
     strategy:
-      fail-fast: false # Continue other jobs even if one fails, to get all logs
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         compiler: [gcc, clang, msvc]
@@ -34,16 +34,20 @@ jobs:
     - name: Set up compiler (Linux)
       if: runner.os == 'Linux'
       run: |
+        echo "DEBUG: Setting up Linux compiler: ${{ matrix.compiler }}"
         if [ "${{ matrix.compiler }}" == "gcc" ]; then
           sudo apt-get update
           sudo apt-get install -y gcc g++ ninja-build cmake
-          echo "CC=gcc" >> $GITHUB_ENV
-          echo "CXX=g++" >> $GITHUB_ENV
+          echo "CC_FOR_CMAKE=gcc" >> $GITHUB_ENV
+          echo "CXX_FOR_CMAKE=g++" >> $GITHUB_ENV
         elif [ "${{ matrix.compiler }}" == "clang" ]; then
           sudo apt-get update
           sudo apt-get install -y clang ninja-build cmake
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "CC_FOR_CMAKE=clang" >> $GITHUB_ENV
+          echo "CXX_FOR_CMAKE=clang++" >> $GITHUB_ENV
+        else
+          echo "::error::Unsupported Linux compiler: ${{ matrix.compiler }}"
+          exit 1
         fi
 
     - name: Set up MSVC (Windows)
@@ -55,42 +59,54 @@ jobs:
       run: |
         echo "DEBUG: MSVC setup step completed."
 
-    - name: Setup vcpkg (Windows)
+    - name: Set VCPKG_DEFAULT_TRIPLET (Windows)
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
-      uses: lukka/run-vcpkg@v11
+      run: echo "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Setup vcpkg and install dependencies (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
+      uses: lukka/run-vcpkg@v11 # Assuming v11 supports vcpkg.json properly
       with:
-        vcpkgGitCommitId: '93193f240893409389e090c242102c5f9a99a91a' # Pinned commit for stability
-        vcpkgTriplet: 'x64-windows-static' # As per previous attempts
-        vcpkgArguments: 'openssl'
-        runVcpkgInstall: true # Show vcpkg install logs
+        vcpkgGitCommitId: '93193f240893409389e090c242102c5f9a99a91a'
+        runVcpkgInstall: true # This should now use vcpkg.json
+        # Removed vcpkgTriplet and vcpkgArguments as they were invalid inputs
+        # VCPKG_DEFAULT_TRIPLET is set in the previous step
 
     - name: DEBUG - After vcpkg Setup
       if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       run: |
         echo "DEBUG: vcpkg setup step completed. VCPKG_ROOT is ${{ env.VCPKG_ROOT }}"
+        echo "DEBUG: VCPKG_DEFAULT_TRIPLET is ${{ env.VCPKG_DEFAULT_TRIPLET }}"
 
-    - name: Configure CMake (Windows MSVC)
-      if: matrix.compiler == 'msvc' && runner.os == 'Windows'
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows' && matrix.compiler == 'msvc'
       run: |
         echo "DEBUG: Starting CMake configuration for Windows (MSVC)."
         echo "DEBUG: Using CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
-        echo "DEBUG: VCPKG_ROOT is ${{ env.VCPKG_ROOT }}" # Confirm VCPKG_ROOT is available
+        echo "DEBUG: VCPKG_ROOT (env) is ${{ env.VCPKG_ROOT }}"
         cmake -B build -S . -G "${{ matrix.cmake_generator }}" -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
         echo "DEBUG: CMake configuration for Windows (MSVC) finished."
     
     - name: Configure CMake (Linux)
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && (matrix.compiler == 'gcc' || matrix.compiler == 'clang')
+      env:
+        CC: ${{ env.CC_FOR_CMAKE }}
+        CXX: ${{ env.CXX_FOR_CMAKE }}
       run: |
         echo "DEBUG: Starting CMake configuration for Linux (${{ matrix.compiler }})."
         echo "DEBUG: CC is $CC, CXX is $CXX"
-        cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -D CMAKE_C_COMPILER=${CC} -D CMAKE_CXX_COMPILER=${CXX}
+        if [ -z "$CC" ] || [ -z "$CXX" ]; then
+          echo "::error:: CC or CXX environment variables are not set for Linux CMake configuration."
+          exit 1
+        fi
+        cmake -B build -S . -G Ninja -DMINIOAUTH2_BUILD_EXAMPLES=ON -DMINIOAUTH2_BUILD_TESTS=ON -DMINIOAUTH2_USE_NLOHMANN_JSON=ON -DCMAKE_BUILD_TYPE=Debug -D CMAKE_C_COMPILER=$CC -D CMAKE_CXX_COMPILER=$CXX
         echo "DEBUG: CMake configuration for Linux (${{ matrix.compiler }}) finished."
 
     - name: Build
       run: cmake --build build --config Debug
 
     - name: Run tests
-      if: runner.os != 'Windows' # CTest doesn't always work reliably with MSVC output in simple GH Actions
+      if: runner.os != 'Windows'
       working-directory: ./build
       run: ctest -C Debug --output-on-failure
 

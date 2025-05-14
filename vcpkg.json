@@ -1,0 +1,7 @@
+{
+  "name": "minioauth2-project",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "openssl"
+  ]
+} 
